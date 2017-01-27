@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 roboptim-capsule
 ================
 
@@ -28,4 +27,3 @@ homepage: http://www.roboptim.net/
 [RobOptim]: http://www.roboptim.net/
 =======
 # roboptim-capsule
->>>>>>> 58d757463a7e31434f1f0f6dfb10157f0fb85ab7
