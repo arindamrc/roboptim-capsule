@@ -1,6 +1,6 @@
 # Requires at least CMake 2.8 to configure the package.
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
-
+SET(CMAKE_CXX_FLAGS "-std=c++11")
 SET(CXX_DISABLE_WERROR TRUE)
 INCLUDE(cmake/base.cmake)
 INCLUDE(cmake/boost.cmake)
@@ -26,13 +26,15 @@ SET(${PROJECT_NAME}_HEADERS
   include/roboptim/capsule/types.hh
   include/roboptim/capsule/util.hh
   include/roboptim/capsule/volume.hh
+  include/roboptim/capsule/pugixml.hpp
+  include/roboptim/capsule/pugiconfig.hpp
   )
 
 SETUP_PROJECT()
 
 # Declare dependencies
 SET(BOOST_COMPONENTS
-  date_time filesystem system thread program_options unit_test_framework)
+  date_time filesystem system thread program_options unit_test_framework regex)
 SEARCH_FOR_BOOST()
 SEARCH_FOR_QHULL()
 ADD_REQUIRED_DEPENDENCY("eigen3 >= 3.2.0")
