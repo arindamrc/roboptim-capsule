@@ -41,14 +41,40 @@
 #include <roboptim/capsule/pugiconfig.hpp>
 #include <roboptim/capsule/pugixml.hpp>
 
+#include <eigen3/Eigen/Geometry>
+
 #include "pugixml.cpp"
 
 using namespace roboptim;
 using namespace roboptim::capsule;
 
-//regex::::      \${side\*\([-+]?([0-9]*\.[0-9]+|[0-9]+)\)\}
-
 const double side = 1;
+
+Eigen::Vector3d axisAngles(Eigen::Vector3d v) {
+	Eigen::Vector3d i(1, 0, 0);
+	Eigen::Vector3d j(0, 1, 0);
+	Eigen::Vector3d k(0, 0, 1);
+
+	double alphax = acos(i.dot(v.normalized()));
+	double alphay = acos(j.dot(v.normalized()));
+	double alphaz = acos(k.dot(v.normalized()));
+
+	return Eigen::Vector3d(alphaz, alphax, alphay);
+}
+
+Eigen::Matrix4d create_transformation_matrix(double ax, double ay, double az,
+		double tx, double ty, double tz) {
+	Eigen::Affine3d rx = Eigen::Affine3d(
+			Eigen::AngleAxisd(ax, Eigen::Vector3d(1, 0, 0)));
+	Eigen::Affine3d ry = Eigen::Affine3d(
+			Eigen::AngleAxisd(ay, Eigen::Vector3d(0, 1, 0)));
+	Eigen::Affine3d rz = Eigen::Affine3d(
+			Eigen::AngleAxisd(az, Eigen::Vector3d(0, 0, 1)));
+	Eigen::Affine3d r = rz * ry * rx;
+	Eigen::Affine3d t(Eigen::Translation3d(Eigen::Vector3d(tx, ty, tz)));
+	Eigen::Matrix4d m = (t * r).matrix();
+	return m;
+}
 
 std::vector<double> getPoints(const char* filename) {
 	std::vector<double> points;
@@ -143,8 +169,9 @@ std::vector<double> parseComponents(const char* str) {
 	return components;
 }
 
-void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<double> e2, double r,
-		const char* rpyStr, const char* xyzStr, const char* scaleStr) {
+void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
+		std::vector<double> e2, double r, const char* rpyStr,
+		const char* xyzStr, const char* scaleStr) {
 
 	printf(
 			"raw: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
@@ -152,15 +179,19 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<do
 
 	std::vector<double> rpy(3);
 	std::vector<double> xyz(3);
-	std::vector<double> scale(3);
+//	std::vector<double> scale(3);
+	double scale = 0.01;
 
-	if (strlen(scaleStr) > 0) {
-		scale = parseComponents(scaleStr);
-	} else {
-		scale[0] = 0.001;
-		scale[1] = 0.001;
-		scale[2] = 0.001;
-	}
+	Eigen::Vector3d endpoint1(e1[0], e1[1], e1[2]);
+	Eigen::Vector3d endpoint2(e2[0], e2[1], e2[2]);
+
+//	if (strlen(scaleStr) > 0) {
+//		scale = parseComponents(scaleStr);
+//	} else {
+//		scale[0] = 0.001;
+//		scale[1] = 0.001;
+//		scale[2] = 0.001;
+//	}
 
 	if (strlen(rpyStr) > 0) {
 		rpy = parseComponents(rpyStr);
@@ -178,42 +209,72 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<do
 		xyz[2] = 0;
 	}
 
-	e1[0] *= scale[0];
-	e1[1] *= scale[1];
-	e1[2] *= scale[2];
+	Eigen::Matrix4d transform = create_transformation_matrix(rpy[0], rpy[1],
+			rpy[2], xyz[0], xyz[1], xyz[2]);
 
-	e2[0] *= scale[0];
-	e2[1] *= scale[1];
-	e2[2] *= scale[2];
+	std::cout << "transformation matrix: " << transform << std::endl;
 
-	r *= scale[0];
+//	e1[0] *= scale[0];
+//	e1[1] *= scale[1];
+//	e1[2] *= scale[2];
+//
+//	e2[0] *= scale[0];
+//	e2[1] *= scale[1];
+//	e2[2] *= scale[2];
+//
+	r *= scale;
 
-	std::vector<double> len(3);
-	len[0] = fabs(e2[0] - e1[0]);
-	len[1] = fabs(e2[1] - e1[1]);
-	len[2] = fabs(e2[2] - e1[2]);
+	Eigen::Vector4d homoe1 = endpoint1.homogeneous();
+	Eigen::Vector4d homoe2 = endpoint2.homogeneous();
+	std::cout << "h1: " << homoe1 << " | " << "h2: " << homoe2 << std::endl;
 
-	double cyl_l = pow((len[0] * len[0] + len[1] * len[1] + len[2] * len[2]), 0.5);
+	homoe1 = transform * homoe1;
+	homoe2 = transform * homoe2;
+	endpoint1 = homoe1.hnormalized();
+	endpoint2 = homoe2.hnormalized();
+	endpoint1 *= scale;
+	endpoint2 *= scale;
+
+	Eigen::Vector3d capAxis = endpoint2 - endpoint1;
+	std::cout << "e1: " << endpoint1 << " | " << "e2: " << endpoint2
+			<< std::endl;
+
+	double caplen = (endpoint1 - endpoint2).norm();
+	Eigen::Vector3d midpoint = (endpoint1 + endpoint2) * 0.5;
+	std::cout << "capsule len: " << caplen << " | " << "midpoint: " << midpoint
+			<< std::endl;
+
+	Eigen::Vector3d rot = axisAngles(capAxis);
+	std::cout << "new rotation: " << rot << std::endl;
+
+//	std::vector<double> len(3);
+//	len[0] = fabs(e2[0] - e1[0]);
+//	len[1] = fabs(e2[1] - e1[1]);
+//	len[2] = fabs(e2[2] - e1[2]);
+
+// cylinder euclidean length
+//	double cyl_l = pow((len[0] * len[0] + len[1] * len[1] + len[2] * len[2]),
+//			0.5);
 
 	std::cout << "scale: " << scale << std::endl;
-	std::cout << "cyl len mag: " << cyl_l << std::endl;
-	std::cout << "cyl len: " << len << std::endl;
+//	std::cout << "cyl len mag: " << cyl_l << std::endl;
+//	std::cout << "cyl len: " << len << std::endl;
 
 	printf(
-				"scaled: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
-				e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
+			"scaled: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
+			e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
 
 	std::cout << "constructing s1" << std::endl;
 	// The first sphere
 	pugi::xml_node s1Collision = linkNode.append_child("collision");
 	pugi::xml_node s1Origin = s1Collision.append_child("origin");
 	std::stringstream s1rpySS;
-	s1rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
+//	s1rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
+	s1rpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	std::cout << "s1rpySS: " << s1rpySS.str() << std::endl;
 	s1Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
 	std::stringstream s1xyzSS;
-	s1xyzSS << (xyz[0] + e1[0]) << " " << (xyz[1] + e1[1]) << " "
-			<< (xyz[2] + e1[2]);
+	s1xyzSS << (endpoint1(0)) << " " << (endpoint1(1)) << " " << (endpoint1(2));
 	std::cout << "s1xyzSS: " << s1xyzSS.str() << std::endl;
 	s1Origin.append_attribute("xyz").set_value(s1xyzSS.str().c_str());
 	pugi::xml_node s1Geom = s1Collision.append_child("geometry");
@@ -226,18 +287,18 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<do
 	pugi::xml_node crCollision = linkNode.append_child("collision");
 	pugi::xml_node crOrigin = crCollision.append_child("origin");
 	std::stringstream crrpySS;
-	crrpySS << rpy[0] << " " << fmod((rpy[1] + 1.5708), 3.14) << " " << rpy[2];
+//	crrpySS << rpy[0] << " " << fmod((rpy[1] + 1.5708), 3.14) << " " << rpy[2];
+//	crrpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
+	crrpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	crOrigin.append_attribute("rpy").set_value(crrpySS.str().c_str());
 	std::stringstream crxyzSS;
-	crxyzSS << (xyz[0] + e1[0] + len[0] / 2) << " "
-			<< (xyz[1] + e1[1] + len[1] / 2) << " "
-			<< (xyz[2] + e1[2] + len[2] / 2);
+	crxyzSS << (midpoint(0)) << " " << (midpoint(1)) << " " << (midpoint(2));
 	std::cout << "crxyzSS: " << crxyzSS.str() << std::endl;
 	crOrigin.append_attribute("xyz").set_value(crxyzSS.str().c_str());
 	pugi::xml_node crGeom = crCollision.append_child("geometry");
 	pugi::xml_node cyl = crGeom.append_child("cylinder");
 	pugi::xml_attribute crl = cyl.append_attribute("length");
-	crl.set_value(cyl_l);
+	crl.set_value(caplen);
 	pugi::xml_attribute crr = cyl.append_attribute("radius");
 	crr.set_value(r);
 
@@ -246,11 +307,11 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<do
 	pugi::xml_node s2Collision = linkNode.append_child("collision");
 	pugi::xml_node s2Origin = s2Collision.append_child("origin");
 	std::stringstream s2rpySS;
-	s2rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
+//	s2rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
+	s2rpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	s2Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
 	std::stringstream s2xyzSS;
-	s2xyzSS << (xyz[0] + e1[0] + len[0]) << " " << (xyz[1] + e1[1] + len[1])
-			<< " " << (xyz[2] + e1[2] + len[2]);
+	s2xyzSS << (endpoint2(0)) << " " << (endpoint2(1)) << " " << (endpoint2(2));
 	s2Origin.append_attribute("xyz").set_value(s2xyzSS.str().c_str());
 	pugi::xml_node s2Geom = s2Collision.append_child("geometry");
 	pugi::xml_node s2 = s2Geom.append_child("sphere");
@@ -259,11 +320,54 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1, std::vector<do
 
 }
 
+int main_old(int argc, char **argv) {
+	const char* filename = "./meshes/untitled.stl";
+	std::vector<double> points; //= getPoints(filename);
+	std::ifstream infile(filename);
+	std::string line;
+	std::getline(infile, line);
+	std::istringstream vertexStream(line);
+	double point;
+	while (vertexStream >> point) {
+		points.push_back(point);
+	}
+	std::cout << points.size() << " points pushed!" << std::endl;
+
+	Fitter fitter = getCapsuleParams(points);
+	std::vector<double> e1(3), e2(3);
+	double radius;
+	std::cout << "Initial: " << fitter.initParam() << std::endl;
+	std::cout << "Solution: " << fitter.solutionParam() << std::endl;
+
+	// assign values to e1,e2 and radius
+	e1[0] = fitter.solutionParam()(0, 0);
+	e1[1] = fitter.solutionParam()(1, 0);
+	e1[2] = fitter.solutionParam()(2, 0);
+
+	std::cout << "e1: 0,1,2: " << e1[0] << "," << e1[1] << "," << e1[2]
+			<< std::endl;
+
+	e2[0] = fitter.solutionParam()(3, 0);
+	e2[1] = fitter.solutionParam()(4, 0);
+	e2[2] = fitter.solutionParam()(5, 0);
+
+	std::cout << "e2: 0,1,2: " << e2[0] << "," << e2[1] << "," << e2[2]
+			<< std::endl;
+
+	radius = fitter.solutionParam()(6, 0);
+
+	std::cout << "rad: " << radius << std::endl;
+	pugi::xml_node tmp;
+
+	makeCapsule(tmp, e1, e2, radius, "", "", "");
+}
+
 int main(int argc, char** argv) {
 
 	try {
 		pugi::xml_document doc;
-		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf.xacro");
+//		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf.xacro");
+		pugi::xml_parse_result result = doc.load_file("./src/urdf/test.urdf");
 		std::cout << "Load result: " << result.description()
 				<< ", 1st child name: " << doc.first_child().name()
 				<< std::endl;
@@ -296,13 +400,15 @@ int main(int argc, char** argv) {
 			e1[1] = fitter.solutionParam()(1, 0);
 			e1[2] = fitter.solutionParam()(2, 0);
 
-			std::cout << "e1: 0,1,2: " << e1[0] << "," << e1[1] << "," << e1[2] << std::endl;
+			std::cout << "e1: 0,1,2: " << e1[0] << "," << e1[1] << "," << e1[2]
+					<< std::endl;
 
 			e2[0] = fitter.solutionParam()(3, 0);
 			e2[1] = fitter.solutionParam()(4, 0);
 			e2[2] = fitter.solutionParam()(5, 0);
 
-			std::cout << "e2: 0,1,2: " << e2[0] << "," << e2[1] << "," << e2[2] << std::endl;
+			std::cout << "e2: 0,1,2: " << e2[0] << "," << e2[1] << "," << e2[2]
+					<< std::endl;
 
 			radius = fitter.solutionParam()(6, 0);
 
