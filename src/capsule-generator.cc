@@ -31,6 +31,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <regex>
+#include <math.h>
 
 #include <boost/program_options.hpp>
 #include <boost/regex.hpp>
@@ -50,33 +51,58 @@ using namespace roboptim::capsule;
 
 const double side = 1;
 
-Eigen::Vector3d axisAngles(Eigen::Vector3d v) {
-	Eigen::Vector3d i(1, 0, 0);
-	Eigen::Vector3d j(0, 1, 0);
-	Eigen::Vector3d k(0, 0, 1);
+Eigen::Vector3d axisAngles(Eigen::Vector3d a) {
+	Eigen::Vector3d z(Eigen::Vector3d::UnitZ());
 
-	double alphax = acos(i.dot(v.normalized()));
-	double alphay = acos(j.dot(v.normalized()));
-	double alphaz = acos(k.dot(v.normalized()));
+	Eigen::Vector3d a_n = a.normalized();
 
-	return Eigen::Vector3d(alphaz, alphax, alphay);
+	Eigen::Vector3d N = a_n.cross(z); // default alignment of the cylinder is with the z-axis
+	std::cout << "a: " << a << ", z: " << z << ", N: " << N << std::endl;
+
+	double sine = N.norm();
+	double cosine = a_n.dot(z);
+
+	std::cout << "sin: " << sine << ", cos: " << cosine << std::endl;
+
+	Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+	Eigen::Matrix3d Nx = Eigen::Matrix3d::Zero();
+
+	Nx << 0, -N(2), N(1), N(2), 0, -N(0), -N(1), N(0), 0;
+
+	Eigen::Matrix3d R = I + Nx + ((1.0 / (1 + cosine)) * (Nx * Nx));
+
+	std::cout << "Nx: " << Nx << std::endl;
+	std::cout << "Nx2: " << (Nx * Nx) << std::endl;
+	std::cout << "scalar: " << (1.0 / (1 + cosine)) << std::endl;
+	std::cout << "R: " << R << std::endl;
+
+	double yaw = atan2((double) R(1, 0), (double) R(0, 0));
+	double pitch = atan2((double) -R(2, 0),
+			(double) pow((double) (R(2, 1) * R(2, 1) + R(2, 2) * R(2, 2)),
+					0.5));
+	double roll = atan2((double) R(2, 1), (double) R(2, 2));
+
+	Eigen::Vector3d rpy = Eigen::Vector3d(roll, pitch, yaw);
+	std::cout << "rpy: " << rpy << std::endl;
+	return rpy;
 }
 
 Eigen::Matrix4d create_transformation_matrix(double ax, double ay, double az,
-		double tx, double ty, double tz) {
+		double tx, double ty, double tz, double sx, double sy, double sz) {
 	Eigen::Affine3d rx = Eigen::Affine3d(
-			Eigen::AngleAxisd(ax, Eigen::Vector3d(1, 0, 0)));
+			Eigen::AngleAxisd(ax, Eigen::Vector3d::UnitX()));
 	Eigen::Affine3d ry = Eigen::Affine3d(
-			Eigen::AngleAxisd(ay, Eigen::Vector3d(0, 1, 0)));
+			Eigen::AngleAxisd(ay, Eigen::Vector3d::UnitY()));
 	Eigen::Affine3d rz = Eigen::Affine3d(
-			Eigen::AngleAxisd(az, Eigen::Vector3d(0, 0, 1)));
+			Eigen::AngleAxisd(az, Eigen::Vector3d::UnitZ()));
 	Eigen::Affine3d r = rz * ry * rx;
 	Eigen::Affine3d t(Eigen::Translation3d(Eigen::Vector3d(tx, ty, tz)));
-	Eigen::Matrix4d m = (t * r).matrix();
+	Eigen::Affine3d s(Eigen::Scaling(Eigen::Vector3d(sx, sy, sz)));
+	Eigen::Matrix4d m = (t * r * s).matrix();
 	return m;
 }
 
-std::vector<double> getPoints(const char* filename) {
+std::vector<double> getPointsFromDAE(const char* filename) {
 	std::vector<double> points;
 	pugi::xml_document doc;
 	pugi::xml_parse_result result = doc.load_file(filename);
@@ -97,6 +123,30 @@ std::vector<double> getPoints(const char* filename) {
 		}
 	}
 	return points;
+}
+
+Eigen::Matrix4d getTransformationMatriyFromDAE(const char* filename) {
+	Eigen::Matrix4d t;
+	std::vector<double> els;
+	pugi::xml_document doc;
+	pugi::xml_parse_result result = doc.load_file(filename);
+	std::cout << "Load meshfile: " << result.description() << std::endl;
+	const std::string path =
+			"/COLLADA/library_visual_scenes/visual_scene[@id=\"Scene\"]/node/matrix[@sid=\"transform\"]";
+	const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
+
+	for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end(); ++it) {
+		const char* elString = it->node().text().get();
+		std::cout << "matrix string: " << elString << std::endl;
+		std::istringstream elStream(elString);
+		double el;
+		while (elStream >> el) {
+			els.push_back(el);
+		}
+	}
+	t = Eigen::Matrix4d(els.data());
+	std::cout << "collada transform matrix: " << t << std::endl;
+	return t;
 }
 
 Fitter getCapsuleParams(std::vector<double> points) {
@@ -169,9 +219,9 @@ std::vector<double> parseComponents(const char* str) {
 	return components;
 }
 
-void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
+void makeCapsuleFromXml(pugi::xml_node linkNode, std::vector<double> e1,
 		std::vector<double> e2, double r, const char* rpyStr,
-		const char* xyzStr, const char* scaleStr) {
+		const char* xyzStr, const char* scaleStr, Eigen::Matrix4d tDAE) {
 
 	printf(
 			"raw: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
@@ -179,19 +229,20 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 
 	std::vector<double> rpy(3);
 	std::vector<double> xyz(3);
-//	std::vector<double> scale(3);
-	double scale = 0.01;
+	std::vector<double> scale(3);
+//	double scale = 0.012;
 
-	Eigen::Vector3d endpoint1(e1[0], e1[1], e1[2]);
-	Eigen::Vector3d endpoint2(e2[0], e2[1], e2[2]);
+//	endpoint1 *= scale;
+//	endpoint2 *= scale;
+//	r *= scale;
 
-//	if (strlen(scaleStr) > 0) {
-//		scale = parseComponents(scaleStr);
-//	} else {
-//		scale[0] = 0.001;
-//		scale[1] = 0.001;
-//		scale[2] = 0.001;
-//	}
+	if (strlen(scaleStr) > 0) {
+		scale = parseComponents(scaleStr);
+	} else {
+		scale[0] = 1;
+		scale[1] = 1;
+		scale[2] = 1;
+	}
 
 	if (strlen(rpyStr) > 0) {
 		rpy = parseComponents(rpyStr);
@@ -209,8 +260,12 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 		xyz[2] = 0;
 	}
 
+	std::cout << "xyz: " << xyz << std::endl;
+	std::cout << "rpy: " << rpy << std::endl;
+	std::cout << "scale: " << scale << std::endl;
+
 	Eigen::Matrix4d transform = create_transformation_matrix(rpy[0], rpy[1],
-			rpy[2], xyz[0], xyz[1], xyz[2]);
+			rpy[2], xyz[0], xyz[1], xyz[2], scale[0], scale[1], scale[2]);
 
 	std::cout << "transformation matrix: " << transform << std::endl;
 
@@ -221,19 +276,24 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 //	e2[0] *= scale[0];
 //	e2[1] *= scale[1];
 //	e2[2] *= scale[2];
-//
-	r *= scale;
+
+	Eigen::Vector3d endpoint1(e1[0], e1[1], e1[2]);
+	Eigen::Vector3d endpoint2(e2[0], e2[1], e2[2]);
 
 	Eigen::Vector4d homoe1 = endpoint1.homogeneous();
 	Eigen::Vector4d homoe2 = endpoint2.homogeneous();
 	std::cout << "h1: " << homoe1 << " | " << "h2: " << homoe2 << std::endl;
 
-	homoe1 = transform * homoe1;
-	homoe2 = transform * homoe2;
+	homoe1 = transform * tDAE * homoe1;
+	homoe2 = transform * tDAE * homoe2;
+	r = r * tDAE(0, 0);
+
+	std::cout << "h1: " << homoe1 << " | " << "h2: " << homoe2 << std::endl;
+	std::cout << "e1: " << endpoint1 << " | " << "e2: " << endpoint2
+			<< std::endl;
+
 	endpoint1 = homoe1.hnormalized();
 	endpoint2 = homoe2.hnormalized();
-	endpoint1 *= scale;
-	endpoint2 *= scale;
 
 	Eigen::Vector3d capAxis = endpoint2 - endpoint1;
 	std::cout << "e1: " << endpoint1 << " | " << "e2: " << endpoint2
@@ -247,29 +307,19 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 	Eigen::Vector3d rot = axisAngles(capAxis);
 	std::cout << "new rotation: " << rot << std::endl;
 
-//	std::vector<double> len(3);
-//	len[0] = fabs(e2[0] - e1[0]);
-//	len[1] = fabs(e2[1] - e1[1]);
-//	len[2] = fabs(e2[2] - e1[2]);
-
-// cylinder euclidean length
-//	double cyl_l = pow((len[0] * len[0] + len[1] * len[1] + len[2] * len[2]),
-//			0.5);
-
-	std::cout << "scale: " << scale << std::endl;
+//	std::cout << "scale: " << scale << std::endl;
 //	std::cout << "cyl len mag: " << cyl_l << std::endl;
 //	std::cout << "cyl len: " << len << std::endl;
 
-	printf(
-			"scaled: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
-			e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
+//	printf(
+//			"scaled: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
+//			e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
 
 	std::cout << "constructing s1" << std::endl;
 	// The first sphere
 	pugi::xml_node s1Collision = linkNode.append_child("collision");
 	pugi::xml_node s1Origin = s1Collision.append_child("origin");
 	std::stringstream s1rpySS;
-//	s1rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
 	s1rpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	std::cout << "s1rpySS: " << s1rpySS.str() << std::endl;
 	s1Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
@@ -287,8 +337,6 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 	pugi::xml_node crCollision = linkNode.append_child("collision");
 	pugi::xml_node crOrigin = crCollision.append_child("origin");
 	std::stringstream crrpySS;
-//	crrpySS << rpy[0] << " " << fmod((rpy[1] + 1.5708), 3.14) << " " << rpy[2];
-//	crrpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
 	crrpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	crOrigin.append_attribute("rpy").set_value(crrpySS.str().c_str());
 	std::stringstream crxyzSS;
@@ -307,7 +355,6 @@ void makeCapsule(pugi::xml_node linkNode, std::vector<double> e1,
 	pugi::xml_node s2Collision = linkNode.append_child("collision");
 	pugi::xml_node s2Origin = s2Collision.append_child("origin");
 	std::stringstream s2rpySS;
-//	s2rpySS << rpy[0] << " " << rpy[1] << " " << rpy[2];
 	s2rpySS << rot(0) << " " << rot(1) << " " << rot(2);
 	s2Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
 	std::stringstream s2xyzSS;
@@ -359,7 +406,8 @@ int main_old(int argc, char **argv) {
 	std::cout << "rad: " << radius << std::endl;
 	pugi::xml_node tmp;
 
-	makeCapsule(tmp, e1, e2, radius, "", "", "");
+//	makeCapsuleFromXml(tmp, e1, e2, radius, "", "", "");
+	return 1;
 }
 
 int main(int argc, char** argv) {
@@ -367,13 +415,13 @@ int main(int argc, char** argv) {
 	try {
 		pugi::xml_document doc;
 //		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf.xacro");
-		pugi::xml_parse_result result = doc.load_file("./src/urdf/test.urdf");
+		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf");
+//		pugi::xml_parse_result result = doc.load_file("./src/urdf/test.urdf");
 		std::cout << "Load result: " << result.description()
 				<< ", 1st child name: " << doc.first_child().name()
 				<< std::endl;
 
-		const std::string path =
-				"/robot/xacro:macro/link[*]/collision/geometry/mesh";
+		const std::string path = "/robot/link[*]/collision/geometry/mesh";
 		const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
 
 		for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end();
@@ -386,8 +434,10 @@ int main(int argc, char** argv) {
 
 			std::cout << " Meshfile: " << filename << std::endl;
 
-			std::vector<double> points = getPoints(filename);
+			std::vector<double> points = getPointsFromDAE(filename);
 			std::cout << points.size() << " points pushed!" << std::endl;
+
+			Eigen::Matrix4d tDAE = getTransformationMatriyFromDAE(filename);
 
 			Fitter fitter = getCapsuleParams(points);
 			std::vector<double> e1(3), e2(3);
@@ -427,12 +477,15 @@ int main(int argc, char** argv) {
 			if (linkNode.remove_child("collision")) {
 				std::cout << "deleted old collision node!!" << std::endl;
 
-				makeCapsule(linkNode, e1, e2, radius, rpyStr, xyzStr, scaleStr);
+				makeCapsuleFromXml(linkNode, e1, e2, radius, rpyStr, xyzStr,
+						scaleStr, tDAE);
 			}
 
 			std::cout << std::endl;
 		}
-		doc.save_file("./src/svh_new.urdf.xacro");
+//		doc.save_file("./src/svh_new.urdf.xacro");
+		doc.save_file("./src/svh_new.urdf");
+//		doc.save_file("./src/test_new.urdf");
 	} catch (std::exception& e) {
 		std::cerr << "Unhandled Exception reached the top of main: " << e.what()
 				<< ", application will now exit" << std::endl;
