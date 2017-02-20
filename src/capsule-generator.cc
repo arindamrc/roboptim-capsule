@@ -56,25 +56,32 @@ Eigen::Vector3d axisAngles(Eigen::Vector3d a) {
 
 	Eigen::Vector3d a_n = a.normalized();
 
-	Eigen::Vector3d N = a_n.cross(z); // default alignment of the cylinder is with the z-axis
+	Eigen::Vector3d N = z.cross(a_n); // 	 default alignment of the cylinder is with the z-axis
 	std::cout << "a: " << a << ", z: " << z << ", N: " << N << std::endl;
 
 	double sine = N.norm();
-	double cosine = a_n.dot(z);
+	double cosine = z.dot(a_n);
 
 	std::cout << "sin: " << sine << ", cos: " << cosine << std::endl;
 
 	Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
 	Eigen::Matrix3d Nx = Eigen::Matrix3d::Zero();
 
-	Nx << 0, -N(2), N(1), N(2), 0, -N(0), -N(1), N(0), 0;
+	Eigen::Vector3d x = N.normalized();
 
-	Eigen::Matrix3d R = I + Nx + ((1.0 / (1 + cosine)) * (Nx * Nx));
+	Nx << 0, -x(2), x(1), x(2), 0, -x(0), -x(1), x(0), 0;
 
+//	Eigen::Matrix3d R = I + Nx + ((1.0 / (1 + cosine)) * (Nx * Nx));
+	Eigen::Matrix3d R = I + sine * Nx + (1.0 - cosine) * (Nx * Nx);
+
+	std::cout << "x: " << x << std::endl;
 	std::cout << "Nx: " << Nx << std::endl;
 	std::cout << "Nx2: " << (Nx * Nx) << std::endl;
 	std::cout << "scalar: " << (1.0 / (1 + cosine)) << std::endl;
 	std::cout << "R: " << R << std::endl;
+
+	Eigen::Vector3d rpy2 = R.eulerAngles(2,1,0);
+	std::cout << "rpy eigen: " << rpy2 << std::endl;
 
 	double yaw = atan2((double) R(1, 0), (double) R(0, 0));
 	double pitch = atan2((double) -R(2, 0),
