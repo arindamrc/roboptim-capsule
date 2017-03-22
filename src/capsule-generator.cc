@@ -45,118 +45,100 @@
 #include <eigen3/Eigen/Geometry>
 
 #include "pugixml.cpp"
+#include "util.cc"
 
 using namespace roboptim;
 using namespace roboptim::capsule;
 
-const double side = 1;
+/*******************************************************************************************************************************************************/
 
-Eigen::Vector3d axisAngles(Eigen::Vector3d a) {
-	Eigen::Vector3d z(Eigen::Vector3d::UnitZ());
-
-	Eigen::Vector3d a_n = a.normalized();
-
-	Eigen::Vector3d N = z.cross(a_n); // 	 default alignment of the cylinder is with the z-axis
-	std::cout << "a: " << a << ", z: " << z << ", N: " << N << std::endl;
-
-	double sine = N.norm();
-	double cosine = z.dot(a_n);
-
-	std::cout << "sin: " << sine << ", cos: " << cosine << std::endl;
-
-	Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-	Eigen::Matrix3d Nx = Eigen::Matrix3d::Zero();
-
-	Eigen::Vector3d x = N.normalized();
-
-	Nx << 0, -x(2), x(1), x(2), 0, -x(0), -x(1), x(0), 0;
-
-//	Eigen::Matrix3d R = I + Nx + ((1.0 / (1 + cosine)) * (Nx * Nx));
-	Eigen::Matrix3d R = I + sine * Nx + (1.0 - cosine) * (Nx * Nx);
-
-	std::cout << "x: " << x << std::endl;
-	std::cout << "Nx: " << Nx << std::endl;
-	std::cout << "Nx2: " << (Nx * Nx) << std::endl;
-	std::cout << "scalar: " << (1.0 / (1 + cosine)) << std::endl;
-	std::cout << "R: " << R << std::endl;
-
-	Eigen::Vector3d rpy2 = R.eulerAngles(2,1,0);
-	std::cout << "rpy eigen: " << rpy2 << std::endl;
-
-	double yaw = atan2((double) R(1, 0), (double) R(0, 0));
-	double pitch = atan2((double) -R(2, 0),
-			(double) pow((double) (R(2, 1) * R(2, 1) + R(2, 2) * R(2, 2)),
-					0.5));
-	double roll = atan2((double) R(2, 1), (double) R(2, 2));
-
-	Eigen::Vector3d rpy = Eigen::Vector3d(roll, pitch, yaw);
-	std::cout << "rpy: " << rpy << std::endl;
-	return rpy;
-}
-
-Eigen::Matrix4d create_transformation_matrix(double ax, double ay, double az,
-		double tx, double ty, double tz, double sx, double sy, double sz) {
-	Eigen::Affine3d rx = Eigen::Affine3d(
-			Eigen::AngleAxisd(ax, Eigen::Vector3d::UnitX()));
-	Eigen::Affine3d ry = Eigen::Affine3d(
-			Eigen::AngleAxisd(ay, Eigen::Vector3d::UnitY()));
-	Eigen::Affine3d rz = Eigen::Affine3d(
-			Eigen::AngleAxisd(az, Eigen::Vector3d::UnitZ()));
-	Eigen::Affine3d r = rz * ry * rx;
-	Eigen::Affine3d t(Eigen::Translation3d(Eigen::Vector3d(tx, ty, tz)));
-	Eigen::Affine3d s(Eigen::Scaling(Eigen::Vector3d(sx, sy, sz)));
-	Eigen::Matrix4d m = (t * r * s).matrix();
-	return m;
-}
-
-std::vector<double> getPointsFromDAE(const char* filename) {
+class BestFitCapsule {
+public:
+	Eigen::Vector3d endpoint1;
+	Eigen::Vector3d endpoint2;
+	double radius;
+	double getLength();
+	Eigen::Vector3d getMidpoint();
+	Eigen::Vector3d getRotation();
+	BestFitCapsule(std::vector<double> points, Eigen::Vector3d translation,
+			Eigen::Vector3d rotation, Eigen::Vector3d scale,
+			Eigen::Matrix4d transformation);
+private:
+	void makeCapsule();
+	Fitter getCapsuleParams();
+	void transformParameters();
+	Eigen::Vector3d xyz_i, rpy_i, s_i;
+	Eigen::Matrix4d M_i;
 	std::vector<double> points;
-	pugi::xml_document doc;
-	pugi::xml_parse_result result = doc.load_file(filename);
-	std::cout << "Load meshfile: " << result.description()
-			<< ", meshfile child name: " << doc.first_child().name()
-			<< std::endl;
+	double len;
+	Eigen::Vector3d midpoint;
+	Eigen::Vector3d rot;
+};
 
-	const std::string path =
-			"/COLLADA/library_geometries/geometry/mesh/source[*]/float_array[contains(@id,'positions')]";
-	const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
-
-	for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end(); ++it) {
-		const char* vertexString = it->node().text().get();
-		std::istringstream vertexStream(vertexString);
-		double point;
-		while (vertexStream >> point) {
-			points.push_back(point);
-		}
-	}
-	return points;
+double BestFitCapsule::getLength() {
+	return len;
 }
 
-Eigen::Matrix4d getTransformationMatriyFromDAE(const char* filename) {
-	Eigen::Matrix4d t;
-	std::vector<double> els;
-	pugi::xml_document doc;
-	pugi::xml_parse_result result = doc.load_file(filename);
-	std::cout << "Load meshfile: " << result.description() << std::endl;
-	const std::string path =
-			"/COLLADA/library_visual_scenes/visual_scene[@id=\"Scene\"]/node/matrix[@sid=\"transform\"]";
-	const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
-
-	for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end(); ++it) {
-		const char* elString = it->node().text().get();
-		std::cout << "matrix string: " << elString << std::endl;
-		std::istringstream elStream(elString);
-		double el;
-		while (elStream >> el) {
-			els.push_back(el);
-		}
-	}
-	t = Eigen::Matrix4d(els.data());
-	std::cout << "collada transform matrix: " << t << std::endl;
-	return t;
+Eigen::Vector3d BestFitCapsule::getMidpoint() {
+	return midpoint;
 }
 
-Fitter getCapsuleParams(std::vector<double> points) {
+Eigen::Vector3d BestFitCapsule::getRotation() {
+	return rot;
+}
+
+BestFitCapsule::BestFitCapsule(std::vector<double> points,
+		Eigen::Vector3d translation, Eigen::Vector3d rotation,
+		Eigen::Vector3d scale, Eigen::Matrix4d transformation) {
+	radius = 0;
+	xyz_i = translation;
+	rpy_i = rotation;
+	s_i = scale;
+	M_i = transformation;
+	this->points = points;
+	makeCapsule();
+}
+
+void BestFitCapsule::makeCapsule() {
+	Fitter fitter = getCapsuleParams();
+
+	// assign values to e1,e2 and radius
+	this->endpoint1 = Eigen::Vector3d(fitter.solutionParam()(0, 0),
+			fitter.solutionParam()(1, 0), fitter.solutionParam()(2, 0));
+	this->endpoint2 = Eigen::Vector3d(fitter.solutionParam()(3, 0),
+			fitter.solutionParam()(4, 0), fitter.solutionParam()(5, 0));
+	this->radius = fitter.solutionParam()(6, 0);
+
+	transformParameters();
+
+}
+
+void BestFitCapsule::transformParameters() {
+	Eigen::Vector4d homoe1 = endpoint1.homogeneous();
+	Eigen::Vector4d homoe2 = endpoint2.homogeneous();
+
+	Eigen::Matrix4d transform =
+			roboptim::geometry::create_transformation_matrix(rpy_i, xyz_i, s_i);
+
+	homoe1 = transform * M_i * homoe1;
+	homoe2 = transform * M_i * homoe2;
+	radius = radius * M_i(0, 0);
+
+	endpoint1 = homoe1.hnormalized();
+	endpoint2 = homoe2.hnormalized();
+
+	Eigen::Vector3d capAxis = endpoint2 - endpoint1;
+
+	len = (endpoint1 - endpoint2).norm();
+	midpoint = (endpoint1 + endpoint2) * 0.5;
+
+	rot = roboptim::geometry::axisAngles(capAxis);
+}
+
+/* Get the capsule endpoints and radius using roboptim capsule*/
+Fitter BestFitCapsule::getCapsuleParams() {
+	assert(points.size() > 0 && "Cannot compute capsule for point set.");
+
 	std::string solver = "ipopt";
 
 	if (points.size() % 3 != 0) {
@@ -201,298 +183,316 @@ Fitter getCapsuleParams(std::vector<double> points) {
 	return fitter;
 }
 
-std::vector<double> parseComponents(const char* str) {
-	std::cout << "parsing components from: " << str << std::endl;
-	std::vector<double> components;
-	std::istringstream stream(str);
-	std::string ci;
+/*******************************************************************************************************************************************************/
 
-	boost::smatch mXacro, mValue;
-	boost::regex eXacro("\\${side\\*\\(([-+]?[0-9]*\.[0-9]+|[0-9]+)\\)}");
-	boost::regex eValue("[-+]?([0-9]*\.[0-9]+|[0-9]+)");
+class Urdf {
+public:
+	const char* getNextMesh();
+	bool hasMoreMesh();
+	Urdf(const char* filepath, bool xacro);
+	void replaceMesh(BestFitCapsule capsule);
+	void replaceMeshWithXacro(BestFitCapsule capsule);
+	Eigen::Vector3d getMeshRotation();
+	Eigen::Vector3d getMeshTranslation();
+	Eigen::Vector3d getMeshScale();
+	bool save(const char* path);
+	bool isXacro();
+private:
+	const char* filepath;
+	const std::string collision_path = "/robot/link[*]/collision/geometry/mesh";
+	pugi::xpath_node_set nodes;
+	const pugi::xpath_node* it;
+	pugi::xml_node lastLinkNode;
+	pugi::xml_node lastCollisionNode;
+	pugi::xml_node lastMeshNode;
+	pugi::xml_document doc;
+	void addXacroDef();
+	bool xacro;
+};
 
-	while (stream >> ci) {
-		std::cout << "ci: " << ci << std::endl;
-		if (boost::regex_search(ci, mXacro, eXacro)) {
-//			std::cout << "match: " << mXacro[0].str() << std::endl;
-//			std::cout << "g1: " << mXacro[1].str() << std::endl;
-			components.push_back(side * atof(mXacro[1].str().c_str()));
-		} else {
-			components.push_back(atof(ci.c_str()));
-		}
+Urdf::Urdf(const char* filepath, bool xacro) {
+	this->filepath = filepath;
+	this->xacro = xacro;
+	doc.load_file(filepath);
+	nodes = doc.select_nodes(collision_path.c_str());
+	it = nodes.begin();
+//	pugi::xml_node meshNode = it->node();
+	if (xacro) {
+		addXacroDef();
 	}
-
-//	std::cout << components << std::endl;
-	return components;
 }
 
-void makeCapsuleFromXml(pugi::xml_node linkNode, std::vector<double> e1,
-		std::vector<double> e2, double r, const char* rpyStr,
-		const char* xyzStr, const char* scaleStr, Eigen::Matrix4d tDAE) {
+bool Urdf::save(const char* path) {
+	return doc.save_file(path);
+}
 
-	printf(
-			"raw: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
-			e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
+void Urdf::addXacroDef() {
+	pugi::xml_node robotNode = doc.child("robot");
 
-	std::vector<double> rpy(3);
-	std::vector<double> xyz(3);
-	std::vector<double> scale(3);
-//	double scale = 0.012;
+	pugi::xml_node xacroNode = robotNode.append_child("xacro:macro");
+	xacroNode.append_attribute("name").set_value("capsule-collision");
+	xacroNode.append_attribute("params").set_value("e1 e2 rad len rpy mid");
 
-//	endpoint1 *= scale;
-//	endpoint2 *= scale;
-//	r *= scale;
-
-	if (strlen(scaleStr) > 0) {
-		scale = parseComponents(scaleStr);
-	} else {
-		scale[0] = 1;
-		scale[1] = 1;
-		scale[2] = 1;
-	}
-
-	if (strlen(rpyStr) > 0) {
-		rpy = parseComponents(rpyStr);
-	} else {
-		rpy[0] = 0;
-		rpy[1] = 0;
-		rpy[2] = 0;
-	}
-
-	if (strlen(xyzStr) > 0) {
-		xyz = parseComponents(xyzStr);
-	} else {
-		xyz[0] = 0;
-		xyz[1] = 0;
-		xyz[2] = 0;
-	}
-
-	std::cout << "xyz: " << xyz << std::endl;
-	std::cout << "rpy: " << rpy << std::endl;
-	std::cout << "scale: " << scale << std::endl;
-
-	Eigen::Matrix4d transform = create_transformation_matrix(rpy[0], rpy[1],
-			rpy[2], xyz[0], xyz[1], xyz[2], scale[0], scale[1], scale[2]);
-
-	std::cout << "transformation matrix: " << transform << std::endl;
-
-//	e1[0] *= scale[0];
-//	e1[1] *= scale[1];
-//	e1[2] *= scale[2];
-//
-//	e2[0] *= scale[0];
-//	e2[1] *= scale[1];
-//	e2[2] *= scale[2];
-
-	Eigen::Vector3d endpoint1(e1[0], e1[1], e1[2]);
-	Eigen::Vector3d endpoint2(e2[0], e2[1], e2[2]);
-
-	Eigen::Vector4d homoe1 = endpoint1.homogeneous();
-	Eigen::Vector4d homoe2 = endpoint2.homogeneous();
-	std::cout << "h1: " << homoe1 << " | " << "h2: " << homoe2 << std::endl;
-
-	homoe1 = transform * tDAE * homoe1;
-	homoe2 = transform * tDAE * homoe2;
-	r = r * tDAE(0, 0);
-
-	std::cout << "h1: " << homoe1 << " | " << "h2: " << homoe2 << std::endl;
-	std::cout << "e1: " << endpoint1 << " | " << "e2: " << endpoint2
-			<< std::endl;
-
-	endpoint1 = homoe1.hnormalized();
-	endpoint2 = homoe2.hnormalized();
-
-	Eigen::Vector3d capAxis = endpoint2 - endpoint1;
-	std::cout << "e1: " << endpoint1 << " | " << "e2: " << endpoint2
-			<< std::endl;
-
-	double caplen = (endpoint1 - endpoint2).norm();
-	Eigen::Vector3d midpoint = (endpoint1 + endpoint2) * 0.5;
-	std::cout << "capsule len: " << caplen << " | " << "midpoint: " << midpoint
-			<< std::endl;
-
-	Eigen::Vector3d rot = axisAngles(capAxis);
-	std::cout << "new rotation: " << rot << std::endl;
-
-//	std::cout << "scale: " << scale << std::endl;
-//	std::cout << "cyl len mag: " << cyl_l << std::endl;
-//	std::cout << "cyl len: " << len << std::endl;
-
-//	printf(
-//			"scaled: e1[0]: %lf, e1[1]: %lf, e1[2]: %lf, e2[0]: %lf, e2[1]: %lf, e2[2]: %lf, r: %lf\n",
-//			e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], r);
-
-	std::cout << "constructing s1" << std::endl;
 	// The first sphere
-	pugi::xml_node s1Collision = linkNode.append_child("collision");
+	pugi::xml_node s1Collision = xacroNode.append_child("collision");
 	pugi::xml_node s1Origin = s1Collision.append_child("origin");
-	std::stringstream s1rpySS;
-	s1rpySS << rot(0) << " " << rot(1) << " " << rot(2);
-	std::cout << "s1rpySS: " << s1rpySS.str() << std::endl;
-	s1Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
-	std::stringstream s1xyzSS;
-	s1xyzSS << (endpoint1(0)) << " " << (endpoint1(1)) << " " << (endpoint1(2));
-	std::cout << "s1xyzSS: " << s1xyzSS.str() << std::endl;
-	s1Origin.append_attribute("xyz").set_value(s1xyzSS.str().c_str());
+	s1Origin.append_attribute("rpy").set_value("${rpy}");
+	s1Origin.append_attribute("xyz").set_value("${e1}");
+
 	pugi::xml_node s1Geom = s1Collision.append_child("geometry");
 	pugi::xml_node s1 = s1Geom.append_child("sphere");
 	pugi::xml_attribute rs1 = s1.append_attribute("radius");
-	rs1.set_value(r);
+	rs1.set_value("${rad}");
 
-	std::cout << "constructing cyl" << std::endl;
 	// The middle cylinder
-	pugi::xml_node crCollision = linkNode.append_child("collision");
+	pugi::xml_node crCollision = xacroNode.append_child("collision");
 	pugi::xml_node crOrigin = crCollision.append_child("origin");
-	std::stringstream crrpySS;
-	crrpySS << rot(0) << " " << rot(1) << " " << rot(2);
-	crOrigin.append_attribute("rpy").set_value(crrpySS.str().c_str());
-	std::stringstream crxyzSS;
-	crxyzSS << (midpoint(0)) << " " << (midpoint(1)) << " " << (midpoint(2));
-	std::cout << "crxyzSS: " << crxyzSS.str() << std::endl;
-	crOrigin.append_attribute("xyz").set_value(crxyzSS.str().c_str());
+	crOrigin.append_attribute("rpy").set_value("${rpy}");
+	crOrigin.append_attribute("xyz").set_value("${mid}");
+
 	pugi::xml_node crGeom = crCollision.append_child("geometry");
 	pugi::xml_node cyl = crGeom.append_child("cylinder");
 	pugi::xml_attribute crl = cyl.append_attribute("length");
-	crl.set_value(caplen);
+	crl.set_value("${len}");
 	pugi::xml_attribute crr = cyl.append_attribute("radius");
-	crr.set_value(r);
+	crr.set_value("${rad}");
 
-	std::cout << "constructing s2" << std::endl;
 	// The second sphere
-	pugi::xml_node s2Collision = linkNode.append_child("collision");
+	pugi::xml_node s2Collision = xacroNode.append_child("collision");
 	pugi::xml_node s2Origin = s2Collision.append_child("origin");
-	std::stringstream s2rpySS;
-	s2rpySS << rot(0) << " " << rot(1) << " " << rot(2);
-	s2Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
-	std::stringstream s2xyzSS;
-	s2xyzSS << (endpoint2(0)) << " " << (endpoint2(1)) << " " << (endpoint2(2));
-	s2Origin.append_attribute("xyz").set_value(s2xyzSS.str().c_str());
+	s2Origin.append_attribute("rpy").set_value("${rpy}");
+	s2Origin.append_attribute("xyz").set_value("${e2}");
+
 	pugi::xml_node s2Geom = s2Collision.append_child("geometry");
 	pugi::xml_node s2 = s2Geom.append_child("sphere");
 	pugi::xml_attribute s2r = s2.append_attribute("radius");
-	s2r.set_value(r);
-
+	s2r.set_value("${rad}");
 }
 
-int main_old(int argc, char **argv) {
-	const char* filename = "./meshes/untitled.stl";
-	std::vector<double> points; //= getPoints(filename);
-	std::ifstream infile(filename);
-	std::string line;
-	std::getline(infile, line);
-	std::istringstream vertexStream(line);
-	double point;
-	while (vertexStream >> point) {
-		points.push_back(point);
+bool Urdf::isXacro() {
+	return this->xacro;
+}
+
+const char* Urdf::getNextMesh() {
+	lastMeshNode = it->node();
+	lastCollisionNode = lastMeshNode.parent().parent();
+	lastLinkNode = lastCollisionNode.parent();
+
+	const char *filename = lastMeshNode.attribute("filename").value();
+	it++;
+	return filename;
+}
+
+bool Urdf::hasMoreMesh() {
+	return it != nodes.end();
+}
+
+void Urdf::replaceMesh(BestFitCapsule capsule) {
+	//remove old collision element
+	if (!lastLinkNode.remove_child("collision")) {
+		std::cout << "Can't remove collision element. Skipping..." << std::endl;
 	}
-	std::cout << points.size() << " points pushed!" << std::endl;
+	// The first sphere
+	pugi::xml_node s1Collision = lastLinkNode.append_child("collision");
+	pugi::xml_node s1Origin = s1Collision.append_child("origin");
+	Eigen::Vector3d rot = capsule.getRotation();
+	Eigen::Vector3d endpoint1 = capsule.endpoint1;
+	Eigen::Vector3d endpoint2 = capsule.endpoint2;
+	Eigen::Vector3d midpoint = capsule.getMidpoint();
 
-	Fitter fitter = getCapsuleParams(points);
-	std::vector<double> e1(3), e2(3);
-	double radius;
-	std::cout << "Initial: " << fitter.initParam() << std::endl;
-	std::cout << "Solution: " << fitter.solutionParam() << std::endl;
+	std::stringstream s1rpySS;
+	s1rpySS << rot(0) << " " << rot(1) << " " << rot(2);
+	s1Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
 
-	// assign values to e1,e2 and radius
-	e1[0] = fitter.solutionParam()(0, 0);
-	e1[1] = fitter.solutionParam()(1, 0);
-	e1[2] = fitter.solutionParam()(2, 0);
+	std::stringstream s1xyzSS;
+	s1xyzSS << (endpoint1(0)) << " " << (endpoint1(1)) << " " << (endpoint1(2));
+	s1Origin.append_attribute("xyz").set_value(s1xyzSS.str().c_str());
 
-	std::cout << "e1: 0,1,2: " << e1[0] << "," << e1[1] << "," << e1[2]
-			<< std::endl;
+	pugi::xml_node s1Geom = s1Collision.append_child("geometry");
+	pugi::xml_node s1 = s1Geom.append_child("sphere");
+	pugi::xml_attribute rs1 = s1.append_attribute("radius");
+	rs1.set_value(capsule.radius);
 
-	e2[0] = fitter.solutionParam()(3, 0);
-	e2[1] = fitter.solutionParam()(4, 0);
-	e2[2] = fitter.solutionParam()(5, 0);
+	// The middle cylinder
+	pugi::xml_node crCollision = lastLinkNode.append_child("collision");
+	pugi::xml_node crOrigin = crCollision.append_child("origin");
 
-	std::cout << "e2: 0,1,2: " << e2[0] << "," << e2[1] << "," << e2[2]
-			<< std::endl;
+	std::stringstream crrpySS;
+	crrpySS << rot(0) << " " << rot(1) << " " << rot(2);
+	crOrigin.append_attribute("rpy").set_value(crrpySS.str().c_str());
 
-	radius = fitter.solutionParam()(6, 0);
+	std::stringstream crxyzSS;
+	crxyzSS << (midpoint(0)) << " " << (midpoint(1)) << " " << (midpoint(2));
+	crOrigin.append_attribute("xyz").set_value(crxyzSS.str().c_str());
 
-	std::cout << "rad: " << radius << std::endl;
-	pugi::xml_node tmp;
+	pugi::xml_node crGeom = crCollision.append_child("geometry");
+	pugi::xml_node cyl = crGeom.append_child("cylinder");
+	pugi::xml_attribute crl = cyl.append_attribute("length");
+	crl.set_value(capsule.getLength());
+	pugi::xml_attribute crr = cyl.append_attribute("radius");
+	crr.set_value(capsule.radius);
 
-//	makeCapsuleFromXml(tmp, e1, e2, radius, "", "", "");
-	return 1;
+	// The second sphere
+	pugi::xml_node s2Collision = lastLinkNode.append_child("collision");
+	pugi::xml_node s2Origin = s2Collision.append_child("origin");
+
+	std::stringstream s2rpySS;
+	s2rpySS << rot(0) << " " << rot(1) << " " << rot(2);
+	s2Origin.append_attribute("rpy").set_value(s1rpySS.str().c_str());
+
+	std::stringstream s2xyzSS;
+	s2xyzSS << (endpoint2(0)) << " " << (endpoint2(1)) << " " << (endpoint2(2));
+	s2Origin.append_attribute("xyz").set_value(s2xyzSS.str().c_str());
+
+	pugi::xml_node s2Geom = s2Collision.append_child("geometry");
+	pugi::xml_node s2 = s2Geom.append_child("sphere");
+	pugi::xml_attribute s2r = s2.append_attribute("radius");
+	s2r.set_value(capsule.radius);
 }
 
-int main(int argc, char** argv) {
+void Urdf::replaceMeshWithXacro(BestFitCapsule capsule) {
+	//remove old collision element
+	if (!lastLinkNode.remove_child("collision")) {
+		std::cout << "Can't remove collision element. Skipping..." << std::endl;
+	}
+	pugi::xml_node xacroCollision = lastLinkNode.append_child(
+			"xacro:capsule-collision");
+	Eigen::Vector3d rot = capsule.getRotation();
+	Eigen::Vector3d endpoint1 = capsule.endpoint1;
+	Eigen::Vector3d endpoint2 = capsule.endpoint2;
+	Eigen::Vector3d midpoint = capsule.getMidpoint();
 
+	std::stringstream e1SS;
+	e1SS << (endpoint1(0)) << " " << (endpoint1(1)) << " " << (endpoint1(2));
+	xacroCollision.append_attribute("e1").set_value(e1SS.str().c_str());
+
+	std::stringstream e2SS;
+	e2SS << (endpoint2(0)) << " " << (endpoint2(1)) << " " << (endpoint2(2));
+	xacroCollision.append_attribute("e2").set_value(e2SS.str().c_str());
+
+	xacroCollision.append_attribute("rad").set_value(capsule.radius);
+
+	xacroCollision.append_attribute("len").set_value(capsule.getLength());
+
+	std::stringstream rpySS;
+	rpySS << (rot(0)) << " " << (rot(1)) << " " << (rot(2));
+	xacroCollision.append_attribute("rpy").set_value(rpySS.str().c_str());
+
+	std::stringstream midSS;
+	midSS << (midpoint(0)) << " " << (midpoint(1)) << " " << (midpoint(2));
+	xacroCollision.append_attribute("mid").set_value(midSS.str().c_str());
+}
+
+Eigen::Vector3d Urdf::getMeshRotation() {
+	pugi::xml_node originNode = lastCollisionNode.child("origin");
+	std::vector<double> rpy;
+	if (!originNode.attribute("rpy")) {
+		return Eigen::Vector3d(0, 0, 0);
+	}
+	const char* rpyStr = originNode.attribute("rpy").value();
+	roboptim::geometry::getAsVector(rpyStr, &rpy);
+	return Eigen::Vector3d(rpy.data());
+}
+
+Eigen::Vector3d Urdf::getMeshTranslation() {
+	pugi::xml_node originNode = lastCollisionNode.child("origin");
+	std::vector<double> xyz;
+	if (!originNode.attribute("xyz")) {
+		return Eigen::Vector3d(0, 0, 0);
+	}
+	const char* xyzStr = originNode.attribute("xyz").value();
+	roboptim::geometry::getAsVector(xyzStr, &xyz);
+	return Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+}
+
+Eigen::Vector3d Urdf::getMeshScale() {
+	std::vector<double> scaleVec;
+	const char* scaleStr = "";
+	if (!lastMeshNode.attribute("scale")) {
+		return Eigen::Vector3d(1, 1, 1);
+	}
+	scaleStr = lastMeshNode.attribute("scale").value();
+	std::cout << "scaleStr: " << scaleStr << std::endl;
+	roboptim::geometry::getAsVector(scaleStr, &scaleVec);
+	return Eigen::Vector3d(scaleVec[0], scaleVec[1], scaleVec[2]);
+}
+
+/*******************************************************************************************************************************************************/
+
+class Dae {
+private:
+	const char* filename;
+	pugi::xml_document doc;
+public:
+	Dae(const char* filename);
+	std::vector<double> getPoints();
+	Eigen::Matrix4d getTransformationMatrix();
+};
+
+Dae::Dae(const char* filename) {
+	this->filename = filename;
+	this->doc.load_file(filename);
+}
+
+/* Extract all polygon vertices from DAE file*/
+std::vector<double> Dae::getPoints() {
+	std::vector<double> points;
+	const std::string path =
+			"/COLLADA/library_geometries/geometry/mesh/source[*]/float_array[contains(@id,'positions')]";
+	const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
+
+	for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end(); ++it) {
+		const char* vertexString = it->node().text().get();
+		roboptim::geometry::getAsVector(vertexString, &points);
+	}
+	return points;
+}
+
+/* Get transformation matrix from DAE file*/
+Eigen::Matrix4d Dae::getTransformationMatrix() {
+	Eigen::Matrix4d t;
+	std::vector<double> els;
+	const std::string path =
+			"/COLLADA/library_visual_scenes/visual_scene[@id=\"Scene\"]/node/matrix[@sid=\"transform\"]";
+	const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
+
+	for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end(); ++it) {
+		const char* elString = it->node().text().get();
+		roboptim::geometry::getAsVector(elString, &els);
+	}
+	t = Eigen::Matrix4d(els.data());
+	return t;
+}
+
+int main(int argc, char **argv) {
 	try {
-		pugi::xml_document doc;
-//		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf.xacro");
-		pugi::xml_parse_result result = doc.load_file("./src/svh.urdf");
-//		pugi::xml_parse_result result = doc.load_file("./src/urdf/test.urdf");
-		std::cout << "Load result: " << result.description()
-				<< ", 1st child name: " << doc.first_child().name()
-				<< std::endl;
-
-		const std::string path = "/robot/link[*]/collision/geometry/mesh";
-		const pugi::xpath_node_set nodes = doc.select_nodes(path.c_str());
-
-		for (const pugi::xpath_node* it = nodes.begin(); it != nodes.end();
-				++it) {
-			pugi::xml_node meshNode = it->node();
-			pugi::xml_node collisionNode = meshNode.parent().parent();
-			pugi::xml_node linkNode = collisionNode.parent();
-
-			const char *filename = meshNode.attribute("filename").value();
-
-			std::cout << " Meshfile: " << filename << std::endl;
-
-			std::vector<double> points = getPointsFromDAE(filename);
-			std::cout << points.size() << " points pushed!" << std::endl;
-
-			Eigen::Matrix4d tDAE = getTransformationMatriyFromDAE(filename);
-
-			Fitter fitter = getCapsuleParams(points);
-			std::vector<double> e1(3), e2(3);
-			double radius;
-			std::cout << "Initial: " << fitter.initParam() << std::endl;
-			std::cout << "Solution: " << fitter.solutionParam() << std::endl;
-
-			// assign values to e1,e2 and radius
-			e1[0] = fitter.solutionParam()(0, 0);
-			e1[1] = fitter.solutionParam()(1, 0);
-			e1[2] = fitter.solutionParam()(2, 0);
-
-			std::cout << "e1: 0,1,2: " << e1[0] << "," << e1[1] << "," << e1[2]
-					<< std::endl;
-
-			e2[0] = fitter.solutionParam()(3, 0);
-			e2[1] = fitter.solutionParam()(4, 0);
-			e2[2] = fitter.solutionParam()(5, 0);
-
-			std::cout << "e2: 0,1,2: " << e2[0] << "," << e2[1] << "," << e2[2]
-					<< std::endl;
-
-			radius = fitter.solutionParam()(6, 0);
-
-			std::cout << "rad: " << radius << std::endl;
-
-//			std::cout << "link node: " << linkNode.name() << std::endl;
-//			std::cout << "collision node: " << collisionNode.name() << std::endl;
-			pugi::xml_node originNode = collisionNode.child("origin");
-			const char* rpyStr = originNode.attribute("rpy").value();
-			const char* xyzStr = originNode.attribute("xyz").value();
-			const char* scaleStr = "";
-			if (meshNode.attribute("scale")) {
-				scaleStr = meshNode.attribute("scale").value();
+		const char* filename = "./src/svh.urdf";
+		Urdf urdf(filename, true);
+		while (urdf.hasMoreMesh()) {
+			const char* meshfile = urdf.getNextMesh();
+			std::cout << "collada file: " << meshfile << std::endl;
+			Dae dae(meshfile);
+			std::vector<double> points = dae.getPoints();
+			Eigen::Matrix4d M = dae.getTransformationMatrix();
+			std::cout << "transformation matrix retrieved." << std::endl;
+			Eigen::Vector3d t = urdf.getMeshTranslation();
+			std::cout << "t: " << t << std::endl;
+			std::cout << "mesh translation retrieved." << std::endl;
+			Eigen::Vector3d r = urdf.getMeshRotation();
+			std::cout << "r: " << r << std::endl;
+			std::cout << "mesh rotation retrieved." << std::endl;
+			Eigen::Vector3d s = urdf.getMeshScale();
+			std::cout << "scaleVec: " << s << std::endl;
+			BestFitCapsule capsule = BestFitCapsule(points, t, r, s, M);
+			if (urdf.isXacro()) {
+				urdf.replaceMeshWithXacro(capsule);
+			} else {
+				urdf.replaceMesh(capsule);
 			}
-
-			if (linkNode.remove_child("collision")) {
-				std::cout << "deleted old collision node!!" << std::endl;
-
-				makeCapsuleFromXml(linkNode, e1, e2, radius, rpyStr, xyzStr,
-						scaleStr, tDAE);
-			}
-
-			std::cout << std::endl;
 		}
-//		doc.save_file("./src/svh_new.urdf.xacro");
-		doc.save_file("./src/svh_new.urdf");
-//		doc.save_file("./src/test_new.urdf");
+		if (urdf.save("./src/svh_new_2.urdf")) {
+			std::cout << "Capsules generated successfully!";
+		}
 	} catch (std::exception& e) {
 		std::cerr << "Unhandled Exception reached the top of main: " << e.what()
 				<< ", application will now exit" << std::endl;
